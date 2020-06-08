@@ -1,3 +1,10 @@
+use nom::branch::alt;
+use nom::bytes::complete::{is_not, tag};
+use nom::character::complete::{char, line_ending, not_line_ending, space0, space1};
+use nom::combinator::opt;
+use nom::lib::std::collections::HashSet;
+use nom::sequence::{delimited, tuple};
+use nom::IResult;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -5,7 +12,7 @@ use std::io::Error as IOError;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
-use std::{fs, slice};
+use std::{fs, mem, slice};
 use threadpool::ThreadPool;
 
 pub struct SearchPaths {
@@ -58,6 +65,12 @@ pub enum Error {
     Parse(ParseError),
 }
 
+impl From<FileNotFoundError> for Error {
+    fn from(err: FileNotFoundError) -> Self {
+        Error::FileNotFound(err)
+    }
+}
+
 impl From<IOError> for Error {
     fn from(err: IOError) -> Self {
         Error::IO(err)
@@ -70,9 +83,16 @@ impl From<ParseError> for Error {
     }
 }
 
+#[derive(Debug)]
 pub struct FileNotFoundError {
-    included_from: Option<(PathBuf, usize)>,
     included_path: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct ParseError {
+    source_file: PathBuf,
+    line_number: usize,
+    message: String,
 }
 
 pub fn preprocess<P, W>(
@@ -166,7 +186,9 @@ impl Parsed {
                     let path_buf = path.to_path_buf();
 
                     pool.execute(move || {
-                        tx_clone.send(ParsedNode::try_parse(path_buf, &search_paths_clone)).unwrap();
+                        tx_clone
+                            .send(ParsedNode::try_parse(path_buf, &search_paths_clone))
+                            .unwrap();
                     });
                 }
             }
@@ -199,7 +221,15 @@ impl Parsed {
         W: Writer,
     {
         let mut stack = Vec::new();
-        let mut current_node = self.get_by_key(self.root_key).unwrap();
+        let mut seen = HashSet::new();
+
+        let root_node = self.get_by_key(self.root_key).unwrap();
+
+        if root_node.once() {
+            seen.insert(root_node.key());
+        }
+
+        let mut current_node = root_node;
         let mut current_chunk = 0;
 
         loop {
@@ -213,8 +243,16 @@ impl Parsed {
                     NodeChunk::Include(path) => {
                         stack.push((current_node.key(), current_chunk));
 
-                        current_node = self.get_by_path(path).unwrap();
-                        current_chunk = 0;
+                        let node = self.get_by_path(path).unwrap();
+
+                        if node.once() && seen.contains(&node.key()) {
+                            current_chunk += 1;
+                        } else {
+                            seen.insert(node.key());
+
+                            current_node = node;
+                            current_chunk = 0;
+                        }
                     }
                 }
             } else {
@@ -252,6 +290,59 @@ impl ParsedNode {
         P: AsRef<Path>,
     {
         let source = fs::read_to_string(&path)?;
+        let source_len = source.len();
+        let parent_path = path.as_ref().parent().unwrap();
+
+        let mut remainder = source.as_str();
+        let mut line_number = 0;
+        let mut chunk_buffer = Vec::new();
+        let mut once = false;
+        let mut current_text_range = 0..0;
+
+        while remainder.len() > 0 {
+            let (new_remainder, line) = parse_line(remainder).map_err(|err| {
+                let mut buf = PathBuf::new();
+
+                buf.push(&path);
+
+                ParseError {
+                    source_file: buf,
+                    line_number,
+                    message: err.to_string(),
+                }
+            })?;
+
+            let pos = source_len - new_remainder.len();
+
+            if line != Line::Text {
+                if current_text_range.len() != 0 {
+                    let range = mem::replace(&mut current_text_range, pos..pos);
+
+                    chunk_buffer.push(NodeChunkInternal::Text(range))
+                }
+            } else {
+                current_text_range.end = pos;
+            }
+
+            match line {
+                Line::Include(path) => {
+                    let path = path.try_resolve(parent_path, search_paths)?;
+
+                    chunk_buffer.push(NodeChunkInternal::Include(path));
+                }
+                Line::PragmaOnce => {
+                    once = true;
+                }
+                _ => (),
+            }
+
+            remainder = new_remainder;
+            line_number += 1;
+        }
+
+        if current_text_range.len() != 0 {
+            chunk_buffer.push(NodeChunkInternal::Text(current_text_range))
+        }
 
         let mut hasher = DefaultHasher::new();
 
@@ -261,9 +352,9 @@ impl ParsedNode {
 
         Ok(ParsedNode {
             key,
-            once: unimplemented!(),
+            once,
             source,
-            chunk_buffer: unimplemented!(),
+            chunk_buffer,
         })
     }
 
@@ -320,12 +411,6 @@ impl<'a> Iterator for NodeChunks<'a> {
     }
 }
 
-pub struct ParseError {
-    source_file: PathBuf,
-    line: usize,
-    message: String,
-}
-
 pub trait Writer {
     fn write_chunk(&mut self, chunk: &str);
 }
@@ -361,5 +446,105 @@ impl Into<String> for StringWriter {
 impl Writer for StringWriter {
     fn write_chunk(&mut self, chunk: &str) {
         self.output_buffer.push_str(chunk);
+    }
+}
+
+fn parse_line(input: &str) -> IResult<&str, Line> {
+    alt((parse_include, parse_pragma_once, parse_text))(input)
+}
+
+fn parse_text(input: &str) -> IResult<&str, Line> {
+    let (rem, _) = tuple((not_line_ending, opt(line_ending)))(input)?;
+
+    Ok((rem, Line::Text))
+}
+
+fn parse_include(input: &str) -> IResult<&str, Line> {
+    let (rem, (_, _, path, _, _)) = tuple((
+        tag("#include"),
+        space1,
+        parse_include_path,
+        space0,
+        line_ending,
+    ))(input)?;
+
+    Ok((rem, Line::Include(path)))
+}
+
+fn parse_include_path(input: &str) -> IResult<&str, IncludePath> {
+    alt((parse_angle_path, parse_quote_path))(input)
+}
+
+fn parse_angle_path(input: &str) -> IResult<&str, IncludePath> {
+    let (rem, target) = delimited(char('<'), is_not(">"), char('>'))(input)?;
+
+    Ok((rem, IncludePath::Angle(target.as_ref())))
+}
+
+fn parse_quote_path(input: &str) -> IResult<&str, IncludePath> {
+    let (rem, target) = delimited(char('"'), is_not("\""), char('"'))(input)?;
+
+    Ok((rem, IncludePath::Quote(target.as_ref())))
+}
+
+fn parse_pragma_once(input: &str) -> IResult<&str, Line> {
+    let (rem, _) = tuple((tag("#pragma"), space1, tag("once"), space0, line_ending))(input)?;
+
+    Ok((rem, Line::PragmaOnce))
+}
+
+#[derive(PartialEq, Debug)]
+enum Line<'a> {
+    Text,
+    Include(IncludePath<'a>),
+    PragmaOnce,
+}
+
+#[derive(PartialEq, Debug)]
+enum IncludePath<'a> {
+    Angle(&'a Path),
+    Quote(&'a Path),
+}
+
+impl<'a> IncludePath<'a> {
+    fn try_resolve(
+        &self,
+        current_parent: &Path,
+        search_paths: &SearchPaths,
+    ) -> Result<PathBuf, FileNotFoundError> {
+        match self {
+            IncludePath::Angle(path) => {
+                for search_path in search_paths.base_paths() {
+                    let join = search_path.join(path);
+
+                    if join.is_file() {
+                        return Ok(join);
+                    }
+                }
+
+                Err(FileNotFoundError {
+                    included_path: path.to_path_buf(),
+                })
+            }
+            IncludePath::Quote(path) => {
+                let join = current_parent.join(path);
+
+                if join.is_file() {
+                    return Ok(join);
+                }
+
+                for search_path in search_paths.quoted_paths() {
+                    let join = search_path.join(path);
+
+                    if join.is_file() {
+                        return Ok(join);
+                    }
+                }
+
+                Err(FileNotFoundError {
+                    included_path: path.to_path_buf(),
+                })
+            }
+        }
     }
 }
