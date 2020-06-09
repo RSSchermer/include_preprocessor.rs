@@ -1,5 +1,5 @@
 [package]
-name = "include-preprocessor"
+name = "include-preprocessor-macro"
 version = "0.1.0"
 authors = ["RSSchermer <roland0507@gmail.com>"]
 edition = "2018"
@@ -7,6 +7,5 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nom = "6.0.0-alpha1"
-num_cpus = "1.13.0"
-threadpool = "1.8.1"
+include-preprocessor-macro-impl = { path = "../include_preprocessor_macro_impl" }
+proc-macro-hack = "0.5.16"

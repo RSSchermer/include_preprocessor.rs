@@ -1,5 +1,6 @@
 mod include_preprocessor;
+mod line_parser;
 
 pub use self::include_preprocessor::{
-    preprocess, Error, FileNotFoundError, ParseError, SearchPaths, StringWriter, Writer,
+    preprocess, Error, FileNotFoundError, OutputSink, ParseError, SearchPaths,
 };

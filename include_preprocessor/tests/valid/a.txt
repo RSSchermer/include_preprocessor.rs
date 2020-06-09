@@ -1,0 +1,15 @@
+File A Line 1
+
+#include "b.txt"
+
+File A Line 5
+
+#include <tests/valid/b.txt>
+
+File A Line 9
+
+#include "c.txt"
+
+File A Line 13
+
+#include <tests/valid/c.txt>
