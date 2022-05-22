@@ -239,14 +239,14 @@ impl Parsed {
                         current_chunk += 1;
                     }
                     NodeChunk::Include(path) => {
-                        stack.push((current_node.key(), current_chunk));
-
                         let node = self.get_by_path(path).unwrap();
 
                         if node.once() && seen.contains(&node.key()) {
                             current_chunk += 1;
                         } else {
                             seen.insert(node.key());
+
+                            stack.push((current_node.key(), current_chunk));
 
                             current_node = node;
                             current_chunk = 0;

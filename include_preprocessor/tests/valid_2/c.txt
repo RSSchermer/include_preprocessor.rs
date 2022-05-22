@@ -1,0 +1,7 @@
+#pragma once
+
+File C Line 3
+
+#include "./b.txt"
+
+File C Line 7
