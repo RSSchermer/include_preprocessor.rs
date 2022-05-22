@@ -1,7 +1,26 @@
 use std::env;
 use std::path::Path;
 
-use include_preprocessor::{preprocess, SearchPaths};
+use include_preprocessor::{preprocess, PathTracker, SearchPaths};
+use std::collections::HashSet;
+
+struct TestPathTracker {
+    paths: HashSet<String>,
+}
+
+impl TestPathTracker {
+    fn new() -> Self {
+        TestPathTracker {
+            paths: HashSet::new(),
+        }
+    }
+}
+
+impl PathTracker for TestPathTracker {
+    fn track(&mut self, path: &Path) {
+        self.paths.insert(path.to_str().unwrap().to_string());
+    }
+}
 
 #[test]
 fn test_preprocess_valid() {
@@ -13,7 +32,8 @@ fn test_preprocess_valid() {
     let base_path: &Path = cargo_manifest_dir.as_ref();
     let entry_point = base_path.join("tests/valid/a.txt");
     let buffer = String::new();
-    let res = preprocess(entry_point, search_paths, buffer);
+    let mut path_tracker = TestPathTracker::new();
+    let res = preprocess(entry_point, search_paths, buffer, &mut path_tracker);
 
     assert!(res.is_ok());
 
@@ -21,6 +41,16 @@ fn test_preprocess_valid() {
     let expected = include_str!("expected.txt");
 
     assert_eq!(&actual, expected);
+
+    assert!(path_tracker
+        .paths
+        .contains(base_path.join("tests/valid/a.txt").to_str().unwrap()));
+    assert!(path_tracker
+        .paths
+        .contains(base_path.join("tests/valid/b.txt").to_str().unwrap()));
+    assert!(path_tracker
+        .paths
+        .contains(base_path.join("tests/valid/c.txt").to_str().unwrap()));
 }
 
 #[test]
@@ -33,7 +63,8 @@ fn test_preprocess_valid_2() {
     let base_path: &Path = cargo_manifest_dir.as_ref();
     let entry_point = base_path.join("tests/valid_2/a.txt");
     let buffer = String::new();
-    let res = preprocess(entry_point, search_paths, buffer);
+    let mut path_tracker = TestPathTracker::new();
+    let res = preprocess(entry_point, search_paths, buffer, &mut path_tracker);
 
     assert!(res.is_ok());
 
@@ -41,4 +72,14 @@ fn test_preprocess_valid_2() {
     let expected = include_str!("expected_2.txt");
 
     assert_eq!(&actual, expected);
+
+    assert!(path_tracker
+        .paths
+        .contains(base_path.join("tests/valid_2/a.txt").to_str().unwrap()));
+    assert!(path_tracker
+        .paths
+        .contains(base_path.join("tests/valid_2/b.txt").to_str().unwrap()));
+    assert!(path_tracker
+        .paths
+        .contains(base_path.join("tests/valid_2/c.txt").to_str().unwrap()));
 }

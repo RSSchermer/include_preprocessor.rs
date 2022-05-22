@@ -93,18 +93,22 @@ pub struct ParseError {
     line_number: usize,
 }
 
-pub fn preprocess<P, S>(
+pub fn preprocess<P, S, T>(
     entry_point: P,
     search_paths: SearchPaths,
     mut writer: S,
+    path_tracker: &mut T,
 ) -> Result<S, Error>
 where
     P: AsRef<Path>,
     S: OutputSink,
+    T: PathTracker,
 {
+    path_tracker.track(entry_point.as_ref());
+
     let parsed = Parsed::try_init(entry_point, search_paths)?;
 
-    parsed.write(&mut writer);
+    parsed.write(&mut writer, path_tracker);
 
     Ok(writer)
 }
@@ -214,9 +218,10 @@ impl Parsed {
         self.get_by_key(key)
     }
 
-    fn write<S>(&self, output_sink: &mut S)
+    fn write<S, T>(&self, output_sink: &mut S, path_tracker: &mut T)
     where
         S: OutputSink,
+        T: PathTracker,
     {
         let mut stack = Vec::new();
         let mut seen = HashSet::new();
@@ -244,6 +249,7 @@ impl Parsed {
                         if node.once() && seen.contains(&node.key()) {
                             current_chunk += 1;
                         } else {
+                            path_tracker.track(path);
                             seen.insert(node.key());
 
                             stack.push((current_node.key(), current_chunk));
@@ -426,6 +432,10 @@ impl OutputSink for String {
     }
 }
 
+pub trait PathTracker {
+    fn track(&mut self, path: &Path);
+}
+
 fn try_resolve_include_path(
     include_path: IncludePath,
     included_from: (&Path, usize),
@@ -475,6 +485,7 @@ fn try_resolve_include_path(
             included_path: path.to_path_buf(),
             source_file: included_from.0.to_path_buf(),
             line_number: included_from.1,
-        }.into())
+        }
+        .into())
     }
 }
