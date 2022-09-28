@@ -1,7 +1,7 @@
 use std::env;
 use std::path::Path;
 
-use include_preprocessor::{preprocess, PathTracker, SearchPaths};
+use include_preprocessor::{preprocess, SourceTracker, SearchPaths};
 use std::collections::HashSet;
 
 struct TestPathTracker {
@@ -16,8 +16,8 @@ impl TestPathTracker {
     }
 }
 
-impl PathTracker for TestPathTracker {
-    fn track(&mut self, path: &Path) {
+impl SourceTracker for TestPathTracker {
+    fn track(&mut self, path: &Path, _source: &str) {
         self.paths.insert(path.to_str().unwrap().to_string());
     }
 }

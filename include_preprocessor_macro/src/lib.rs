@@ -2,7 +2,7 @@
 
 use std::env;
 
-use include_preprocessor::{preprocess, PathTracker, SearchPaths};
+use include_preprocessor::{preprocess, SourceTracker, SearchPaths};
 use proc_macro::tracked_path;
 use proc_macro::{Literal, Span, TokenStream, TokenTree};
 use std::path::Path;
@@ -40,8 +40,8 @@ pub fn include_str_ipp(input: TokenStream) -> TokenStream {
 
 struct ProcMacroPathTracker;
 
-impl PathTracker for ProcMacroPathTracker {
-    fn track(&mut self, path: &Path) {
+impl SourceTracker for ProcMacroPathTracker {
+    fn track(&mut self, path: &Path, _source: &str) {
         tracked_path::path(path.to_str().expect("cannot track non-unicode path"));
     }
 }

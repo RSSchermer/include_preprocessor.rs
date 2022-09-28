@@ -97,18 +97,16 @@ pub fn preprocess<P, S, T>(
     entry_point: P,
     search_paths: SearchPaths,
     mut writer: S,
-    path_tracker: &mut T,
+    source_tracker: &mut T,
 ) -> Result<S, Error>
 where
     P: AsRef<Path>,
     S: OutputSink,
-    T: PathTracker,
+    T: SourceTracker,
 {
-    path_tracker.track(entry_point.as_ref());
-
     let parsed = Parsed::try_init(entry_point, search_paths)?;
 
-    parsed.write(&mut writer, path_tracker);
+    parsed.write(&mut writer, source_tracker);
 
     Ok(writer)
 }
@@ -141,13 +139,14 @@ impl Parsed {
         let mut lookup = HashMap::new();
         let (tx, rx) = mpsc::channel();
         let pool = ThreadPool::new(num_cpus::get());
+        let entry_path = entry_point.as_ref().canonicalize()?;
 
         let mut hasher = DefaultHasher::new();
 
-        entry_point.as_ref().hash(&mut hasher);
+        entry_path.hash(&mut hasher);
 
         let root_key = hasher.finish();
-        let root_node = ParsedNode::try_parse(entry_point, &search_paths);
+        let root_node = ParsedNode::try_parse(entry_path, &search_paths);
 
         lookup.insert(root_key, LoadState::Pending);
 
@@ -218,10 +217,10 @@ impl Parsed {
         self.get_by_key(key)
     }
 
-    fn write<S, T>(&self, output_sink: &mut S, path_tracker: &mut T)
+    fn write<S, T>(&self, output_sink: &mut S, source_tracker: &mut T)
     where
         S: OutputSink,
-        T: PathTracker,
+        T: SourceTracker,
     {
         let mut stack = Vec::new();
         let mut seen = HashSet::new();
@@ -239,7 +238,11 @@ impl Parsed {
             if let Some(chunk) = current_node.get_chunk(current_chunk) {
                 match chunk {
                     NodeChunk::Text(chunk) => {
-                        output_sink.sink(chunk);
+                        output_sink.sink_source_mapped(SourceMappedChunk {
+                            text: chunk.text(),
+                            source_path: current_node.path(),
+                            source_range: chunk.byte_range()
+                        });
 
                         current_chunk += 1;
                     }
@@ -249,7 +252,6 @@ impl Parsed {
                         if node.once() && seen.contains(&node.key()) {
                             current_chunk += 1;
                         } else {
-                            path_tracker.track(path);
                             seen.insert(node.key());
 
                             stack.push((current_node.key(), current_chunk));
@@ -271,6 +273,12 @@ impl Parsed {
                 }
             }
         }
+
+        for node in self.lookup.values() {
+            let node = node.loaded().unwrap();
+
+            source_tracker.track(node.path(), node.source());
+        }
     }
 }
 
@@ -280,12 +288,28 @@ enum NodeChunkInternal {
     Include(PathBuf),
 }
 
+struct TextChunk<'a> {
+    byte_range: Range<usize>,
+    text: &'a str,
+}
+
+impl<'a> TextChunk<'a> {
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn byte_range(&self) -> Range<usize> {
+        self.byte_range.clone()
+    }
+}
+
 enum NodeChunk<'a> {
-    Text(&'a str),
+    Text(TextChunk<'a>),
     Include(&'a Path),
 }
 
 struct ParsedNode {
+    path: PathBuf,
     key: u64,
     once: bool,
     source: String,
@@ -293,9 +317,7 @@ struct ParsedNode {
 }
 
 impl ParsedNode {
-    fn try_parse<P>(path: P, search_paths: &SearchPaths) -> Result<Self, Error>
-    where
-        P: AsRef<Path>,
+    fn try_parse(path: PathBuf, search_paths: &SearchPaths) -> Result<Self, Error>
     {
         let source = fs::read_to_string(&path)?;
         let source_len = source.len();
@@ -357,11 +379,12 @@ impl ParsedNode {
 
         let mut hasher = DefaultHasher::new();
 
-        path.as_ref().hash(&mut hasher);
+        path.hash(&mut hasher);
 
         let key = hasher.finish();
 
         Ok(ParsedNode {
+            path,
             key,
             once,
             source,
@@ -369,8 +392,16 @@ impl ParsedNode {
         })
     }
 
+    fn path(&self) -> &Path {
+        self.path.as_ref()
+    }
+
     fn key(&self) -> u64 {
         self.key
+    }
+
+    fn source(&self) -> &str {
+        &self.source
     }
 
     fn once(&self) -> bool {
@@ -379,7 +410,10 @@ impl ParsedNode {
 
     fn get_chunk(&self, index: usize) -> Option<NodeChunk> {
         self.chunk_buffer.get(index).map(|chunk| match chunk {
-            NodeChunkInternal::Text(range) => NodeChunk::Text(&self.source[range.clone()]),
+            NodeChunkInternal::Text(range) => NodeChunk::Text(TextChunk {
+                byte_range: range.clone(),
+                text: &self.source[range.clone()]
+            }),
             NodeChunkInternal::Include(path) => NodeChunk::Include(path.as_path()),
         })
     }
@@ -411,7 +445,10 @@ impl<'a> Iterator for NodeChunks<'a> {
 
         if let Some(chunk) = chunks.next() {
             let chunk = match chunk {
-                NodeChunkInternal::Text(range) => NodeChunk::Text(&source[range.clone()]),
+                NodeChunkInternal::Text(range) => NodeChunk::Text(TextChunk {
+                    byte_range: range.clone(),
+                    text: &source[range.clone()]
+                }),
                 NodeChunkInternal::Include(path) => NodeChunk::Include(path),
             };
 
@@ -422,18 +459,44 @@ impl<'a> Iterator for NodeChunks<'a> {
     }
 }
 
+pub struct SourceMappedChunk<'a> {
+    text: &'a str,
+    source_path: &'a Path,
+    source_range: Range<usize>
+}
+
+impl<'a> SourceMappedChunk<'a> {
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn source_path(&self) -> &Path {
+        &self.source_path
+    }
+
+    pub fn source_range(&self) -> Range<usize> {
+        self.source_range.clone()
+    }
+}
+
 pub trait OutputSink {
     fn sink(&mut self, chunk: &str);
+
+    fn sink_source_mapped(&mut self, source_mapped_chunk: SourceMappedChunk);
 }
 
 impl OutputSink for String {
     fn sink(&mut self, chunk: &str) {
         self.push_str(chunk);
     }
+
+    fn sink_source_mapped(&mut self, source_mapped_chunk: SourceMappedChunk) {
+        self.push_str(source_mapped_chunk.text)
+    }
 }
 
-pub trait PathTracker {
-    fn track(&mut self, path: &Path);
+pub trait SourceTracker {
+    fn track(&mut self, path: &Path, source: &str);
 }
 
 fn try_resolve_include_path(
