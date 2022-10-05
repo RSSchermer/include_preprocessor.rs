@@ -2,7 +2,7 @@
 
 use std::env;
 
-use include_preprocessor::{preprocess, SourceTracker, SearchPaths};
+use include_preprocessor::{preprocess, SearchPaths, SourceTracker};
 use proc_macro::tracked_path;
 use proc_macro::{Literal, Span, TokenStream, TokenTree};
 use std::path::Path;

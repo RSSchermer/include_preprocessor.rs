@@ -1,7 +1,7 @@
 use std::env;
 use std::path::Path;
 
-use include_preprocessor::{preprocess, SourceTracker, SearchPaths};
+use include_preprocessor::{preprocess, SearchPaths, SourceTracker};
 use std::collections::HashSet;
 
 struct TestPathTracker {

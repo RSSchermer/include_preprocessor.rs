@@ -83,14 +83,52 @@ impl From<ParseError> for Error {
 pub struct FileNotFoundError {
     included_path: PathBuf,
     source_file: PathBuf,
+    source: String,
     line_number: usize,
+}
+
+impl FileNotFoundError {
+    pub fn included_path(&self) -> &Path {
+        &self.included_path
+    }
+
+    pub fn source_file(&self) -> &Path {
+        &self.source_file
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub fn line_number(&self) -> usize {
+        self.line_number
+    }
 }
 
 #[derive(Debug)]
 pub struct ParseError {
     message: String,
     source_file: PathBuf,
+    source: String,
     line_number: usize,
+}
+
+impl ParseError {
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn source_file(&self) -> &Path {
+        &self.source_file
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub fn line_number(&self) -> usize {
+        self.line_number
+    }
 }
 
 pub fn preprocess<P, S, T>(
@@ -241,7 +279,7 @@ impl Parsed {
                         output_sink.sink_source_mapped(SourceMappedChunk {
                             text: chunk.text(),
                             source_path: current_node.path(),
-                            source_range: chunk.byte_range()
+                            source_range: chunk.byte_range(),
                         });
 
                         current_chunk += 1;
@@ -317,8 +355,7 @@ struct ParsedNode {
 }
 
 impl ParsedNode {
-    fn try_parse(path: PathBuf, search_paths: &SearchPaths) -> Result<Self, Error>
-    {
+    fn try_parse(path: PathBuf, search_paths: &SearchPaths) -> Result<Self, Error> {
         let source = fs::read_to_string(&path)?;
         let source_len = source.len();
 
@@ -337,6 +374,7 @@ impl ParsedNode {
                 ParseError {
                     source_file: buf,
                     line_number,
+                    source: source.clone(),
                     message: err.to_string(),
                 }
             })?;
@@ -357,7 +395,7 @@ impl ParsedNode {
                 Line::Include(target) => {
                     let resolved = try_resolve_include_path(
                         target,
-                        (path.as_ref(), line_number),
+                        (path.as_ref(), &source, line_number),
                         search_paths,
                     )?;
 
@@ -412,7 +450,7 @@ impl ParsedNode {
         self.chunk_buffer.get(index).map(|chunk| match chunk {
             NodeChunkInternal::Text(range) => NodeChunk::Text(TextChunk {
                 byte_range: range.clone(),
-                text: &self.source[range.clone()]
+                text: &self.source[range.clone()],
             }),
             NodeChunkInternal::Include(path) => NodeChunk::Include(path.as_path()),
         })
@@ -447,7 +485,7 @@ impl<'a> Iterator for NodeChunks<'a> {
             let chunk = match chunk {
                 NodeChunkInternal::Text(range) => NodeChunk::Text(TextChunk {
                     byte_range: range.clone(),
-                    text: &source[range.clone()]
+                    text: &source[range.clone()],
                 }),
                 NodeChunkInternal::Include(path) => NodeChunk::Include(path),
             };
@@ -462,7 +500,7 @@ impl<'a> Iterator for NodeChunks<'a> {
 pub struct SourceMappedChunk<'a> {
     text: &'a str,
     source_path: &'a Path,
-    source_range: Range<usize>
+    source_range: Range<usize>,
 }
 
 impl<'a> SourceMappedChunk<'a> {
@@ -501,7 +539,7 @@ pub trait SourceTracker {
 
 fn try_resolve_include_path(
     include_path: IncludePath,
-    included_from: (&Path, usize),
+    included_from: (&Path, &str, usize),
     search_paths: &SearchPaths,
 ) -> Result<PathBuf, Error> {
     let mut resolved = None;
@@ -547,7 +585,8 @@ fn try_resolve_include_path(
         Err(FileNotFoundError {
             included_path: path.to_path_buf(),
             source_file: included_from.0.to_path_buf(),
-            line_number: included_from.1,
+            source: included_from.1.to_string(),
+            line_number: included_from.2,
         }
         .into())
     }
